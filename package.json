@@ -1,0 +1,25 @@
+{
+  "name": "meta-ai-api",
+  "version": "1.0.0",
+  "description": "A JavaScript client for the Meta AI API.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "meta",
+    "ai",
+    "api"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.7.2",
+    "axios-cookiejar-support": "^5.0.2",
+    "cheerio": "^1.0.0-rc.12",
+    "form-data": "^4.0.0",
+    "qs": "^6.12.1",
+    "tough-cookie": "^4.1.4",
+    "uuid": "^9.0.1"
+  }
+} 

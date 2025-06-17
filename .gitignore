@@ -1,0 +1,51 @@
+# Node modules
+node_modules/
+
+# Build outputs
+dist/
+build/
+out/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.*.local
+
+# Editor configs
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# Coverage
+coverage/
+
+# TypeScript
+*.tsbuildinfo
+
+# Optional: if using next.js or similar
+.next/
+.vercel/
+
+# Optional: if using parcel
+.cache/
+
+# Optional: if using storybook
+storybook-static/
+
+# Optional: if using local SSL certs
+*.pem
+
+# Optional: lockfiles (keep only one if using npm/yarn/pnpm)
+package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
