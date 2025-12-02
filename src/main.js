@@ -1,9 +1,7 @@
 const { v4: uuidv4 } = require("uuid");
 const FormData = require("form-data");
-const axios = require("axios");
 const {
   generateOfflineThreadingId,
-  formatResponse,
   getFbSession,
   getSession,
   getCookies,
@@ -11,7 +9,8 @@ const {
 const { FacebookRegionBlocked } = require("./exceptions");
 const { Readable } = require("stream");
 
-const MAX_RETRIES = 3;
+// DOC_ID MỚI TỪ CURL CỦA BẠN
+const DOC_ID = "26191548920434983"; 
 
 class MetaAI {
   constructor(fb_email = null, fb_password = null, proxy = null) {
@@ -33,7 +32,6 @@ class MetaAI {
         this.cookies = {
             abra_sess: (await getFbSession(this.fb_email, this.fb_password, this.proxy)).abra_sess
         };
-        // Also fetch other cookies
         const otherCookies = await getCookies(this.session);
         this.cookies = {...this.cookies, ...otherCookies};
     } else {
@@ -42,9 +40,7 @@ class MetaAI {
   }
 
   async getAccessToken() {
-    if (this.access_token) {
-      return this.access_token;
-    }
+    if (this.access_token) return this.access_token;
 
     const url = "https://www.meta.ai/api/graphql/";
     const form = new FormData();
@@ -56,7 +52,7 @@ class MetaAI {
         icebreaker_type: "TEXT",
         __relay_internal__pv__WebPixelRatiorelayprovider: 1,
       }));
-    form.append("doc_id", "7604648749596940");
+    form.append("doc_id", "7604648749596940"); // Keep old doc_id for TOS acceptance
 
     const headers = {
       ...form.getHeaders(),
@@ -64,20 +60,14 @@ class MetaAI {
       "sec-fetch-site": "same-origin",
       "x-fb-friendly-name": "useAbraAcceptTOSForTempUserMutation",
     };
-
     try {
       const response = await this.session.post(url, form, { headers });
       const auth_json = response.data;
-      this.access_token =
-        auth_json.data.xab_abra_accept_terms_of_service.new_temp_user_auth
-          .access_token;
-      // Sleep for a bit for the API to register the new token.
+      this.access_token = auth_json.data.xab_abra_accept_terms_of_service.new_temp_user_auth.access_token;
       await new Promise((resolve) => setTimeout(resolve, 1000));
       return this.access_token;
     } catch (error) {
-      throw new FacebookRegionBlocked(
-        "Unable to receive a valid response from Meta AI. This is likely due to your region being blocked. Try manually accessing https://www.meta.ai/ to confirm."
-      );
+      throw new FacebookRegionBlocked("Region blocked or invalid response.");
     }
   }
 
@@ -85,28 +75,13 @@ class MetaAI {
     return this._promptInternal(message, stream, new_conversation, 0);
   }
 
-  async _promptInternal(
-    message,
-    stream = false,
-    new_conversation = false,
-    attempts = 0
-  ) {
-    let auth_payload;
+  async _promptInternal(message, stream = false, new_conversation = false, attempts = 0) {
     const url = "https://graph.meta.ai/graphql?locale=user";
 
     if (!this.is_authed) {
-      if (!this.access_token) {
-          this.access_token = await this.getAccessToken();
-      }
-      auth_payload = { access_token: this.access_token };
+      if (!this.access_token) this.access_token = await this.getAccessToken();
     } else {
-        // This part would need significant updates for authenticated users
-        // based on the new API structure, which is not fully provided.
-        // Sticking to access_token (temporary user) flow for now.
-      if (!this.cookies.fb_dtsg) {
-          this.cookies = {...this.cookies, ...(await getCookies(this.session))};
-      }
-      auth_payload = { fb_dtsg: this.cookies.fb_dtsg };
+      if (!this.cookies.fb_dtsg) this.cookies = {...this.cookies, ...(await getCookies(this.session))};
     }
 
     if (!this.external_conversation_id || new_conversation) {
@@ -114,14 +89,18 @@ class MetaAI {
       this.thread_session_id = uuidv4();
     }
 
+    const offlineThreadingId = generateOfflineThreadingId();
+    
+    // Cấu trúc variables MỚI dựa trên cURL
     const variables = {
         message: { sensitive_string_value: message },
         externalConversationId: this.external_conversation_id,
-        offlineThreadingId: generateOfflineThreadingId(),
+        offlineThreadingId: offlineThreadingId,
         threadSessionId: this.thread_session_id,
+        isNewConversation: new_conversation, // Quan trọng: Truyền đúng boolean
         suggestedPromptIndex: null,
         promptPrefix: null,
-        entrypoint: "KADABRA__HOME__UNIFIED_INPUT_BAR",
+        entrypoint: "KADABRA__CHAT__UNIFIED_INPUT_BAR",
         attachments: [],
         attachmentsV2: [],
         activeMediaSets: [],
@@ -129,49 +108,96 @@ class MetaAI {
         activeArtifactVersion: null,
         userUploadEditModeInput: null,
         reelComposeInput: null,
-        qplJoinId: "fd205321fb1f6178a", // This seems static from curl
+        qplJoinId: "fd7cc37ed3589c726", 
         sourceRemixPostId: null,
         gkPlannerOrReasoningEnabled: false,
         selectedModel: "BASIC_OPTION",
         conversationMode: null,
+        selectedAgentType: "PLANNER",
+        agentSettings: null,
         conversationStarterId: null,
         promptType: null,
         artifactRewriteOptions: null,
-        imagineClientOptions: null,
+        imagineOperationRequest: null,
+        imagineClientOptions: { orientation: "VERTICAL" },
         spaceId: null,
-        __relay_internal__pv__AbraArtifactsEnabledrelayprovider: true,
-        __relay_internal__pv__KadabraMemoryEnabledrelayprovider: true,
+        sparkSnapshotId: null,
+        topicPageId: null,
+        includeSpace: false,
+        storybookId: null,
+        messagePersistentInput: {
+            attachment_size: null,
+            attachment_type: null,
+            // Bot ID thường là ID của user + 1 hoặc random, ở đây ta fake tăng lên 1
+            bot_message_offline_threading_id: (BigInt(offlineThreadingId) + 1n).toString(),
+            conversation_mode: null,
+            external_conversation_id: this.external_conversation_id,
+            is_new_conversation: new_conversation,
+            meta_ai_entry_point: "KADABRA__CHAT__UNIFIED_INPUT_BAR",
+            offline_threading_id: offlineThreadingId,
+            prompt_id: null,
+            prompt_session_id: this.thread_session_id
+        },
+        alakazam_enabled: true,
+        skipInFlightMessageWithParams: null,
+        // Các cờ relay provider (copy y nguyên từ cURL)
+        __relay_internal__pv__KadabraSocialSearchEnabledrelayprovider: false,
+        __relay_internal__pv__KadabraZeitgeistEnabledrelayprovider: false,
+        __relay_internal__pv__alakazam_enabledrelayprovider: true,
+        __relay_internal__pv__sp_kadabra_survey_invitationrelayprovider: true,
+        __relay_internal__pv__KadabraAINativeUXrelayprovider: false,
+        __relay_internal__pv__enable_kadabra_partial_resultsrelayprovider: false,
+        __relay_internal__pv__AbraArtifactsEnabledrelayprovider: false,
+        __relay_internal__pv__KadabraMemoryEnabledrelayprovider: false,
         __relay_internal__pv__AbraPlannerEnabledrelayprovider: false,
         __relay_internal__pv__AbraWidgetsEnabledrelayprovider: false,
         __relay_internal__pv__KadabraDeepResearchEnabledrelayprovider: false,
         __relay_internal__pv__KadabraThinkHarderEnabledrelayprovider: false,
+        __relay_internal__pv__KadabraVergeEnabledrelayprovider: false,
+        __relay_internal__pv__KadabraSpacesEnabledrelayprovider: false,
+        __relay_internal__pv__KadabraProductSearchEnabledrelayprovider: false,
+        __relay_internal__pv__KadabraAreServiceEnabledrelayprovider: false,
+        __relay_internal__pv__kadabra_render_reasoning_response_statesrelayprovider: true,
+        __relay_internal__pv__kadabra_reasoning_cotrelayprovider: false,
         __relay_internal__pv__AbraSearchInlineReferencesEnabledrelayprovider: true,
         __relay_internal__pv__AbraComposedTextWidgetsrelayprovider: true,
-        __relay_internal__pv__WebPixelRatiorelayprovider: 1,
-        __relay_internal__pv__AbraSearchReferencesHovercardEnabledrelayprovider: true,
+        __relay_internal__pv__KadabraNewCitationsEnabledrelayprovider: true,
+        __relay_internal__pv__WebPixelRatiorelayprovider: 3,
+        __relay_internal__pv__KadabraVideoDeliveryRequestrelayprovider: {
+            dash_manifest_requests: [{}],
+            progressive_url_requests: [{ quality: "HD" }, { quality: "SD" }]
+        },
+        __relay_internal__pv__KadabraWidgetsRedesignEnabledrelayprovider: false,
+        __relay_internal__pv__kadabra_enable_send_message_retryrelayprovider: true,
         __relay_internal__pv__KadabraEmailCalendarIntegrationrelayprovider: false,
+        __relay_internal__pv__kadabra_reels_connect_featuresrelayprovider: false,
         __relay_internal__pv__AbraBugNubrelayprovider: false,
         __relay_internal__pv__AbraRedteamingrelayprovider: false,
         __relay_internal__pv__AbraDebugDevOnlyrelayprovider: false,
         __relay_internal__pv__kadabra_enable_open_in_editor_message_actionrelayprovider: false,
         __relay_internal__pv__AbraThreadsEnabledrelayprovider: false,
-        __relay_internal__pv__KadabraImagineCanvasDevSettingsrelayprovider: false,
-        __relay_internal__pv__AbraArtifactDragImagineFromConversationrelayprovider: true,
+        __relay_internal__pv__kadabra_story_builder_enabledrelayprovider: false,
+        __relay_internal__pv__kadabra_imagine_canvas_enable_dev_settingsrelayprovider: false,
+        __relay_internal__pv__kadabra_create_media_deletionrelayprovider: false,
+        __relay_internal__pv__kadabra_moodboardrelayprovider: false,
+        __relay_internal__pv__AbraArtifactDragImagineFromConversationrelayprovider: false,
+        __relay_internal__pv__kadabra_media_item_renderer_heightrelayprovider: 545,
+        __relay_internal__pv__kadabra_media_item_renderer_widthrelayprovider: 620,
         __relay_internal__pv__AbraQPDocUploadNuxTriggerNamerelayprovider: "meta_dot_ai_abra_web_doc_upload_nux_tour",
         __relay_internal__pv__AbraSurfaceNuxIDrelayprovider: "12177",
-        __relay_internal__pv__KadabraSharingDialogV2relayprovider: false,
         __relay_internal__pv__KadabraConversationRenamingrelayprovider: true,
         __relay_internal__pv__AbraIsLoggedOutrelayprovider: true,
-        __relay_internal__pv__KadabraArtifactsRewriteV2relayprovider: false,
+        __relay_internal__pv__KadabraCanvasDisplayHeaderV2relayprovider: true,
         __relay_internal__pv__AbraArtifactEditorDebugModerelayprovider: false,
         __relay_internal__pv__AbraArtifactEditorDownloadHTMLEnabledrelayprovider: false,
-        __relay_internal__pv__AbraArtifactsRenamingEnabledrelayprovider: true,
+        __relay_internal__pv__kadabra_create_row_hover_optionsrelayprovider: false,
+        __relay_internal__pv__kadabra_media_info_pillsrelayprovider: true,
+        __relay_internal__pv__KadabraConcordInternalProfileBadgeEnabledrelayprovider: false,
         __relay_internal__pv__KadabraSocialGraphrelayprovider: false
-      };
+    };
 
     const form = new FormData();
     if(this.is_authed) {
-        // Authenticated flow not fully implemented based on new API
         form.append("fb_dtsg", this.cookies.fb_dtsg);
     } else {
         form.append("access_token", this.access_token);
@@ -180,13 +206,13 @@ class MetaAI {
     form.append("av", 0);
     form.append("__user", 0);
     form.append("__a", 1);
-    form.append("__req", "g");
-    form.append("__hs", "20256.HYP:kadabra_pkg.2.1...0"); // Static from curl
-    form.append("dpr", 1);
-    form.append("__ccg", "MODERATE");
-    form.append("__rev", this.cookies.__spin_r);
-    form.append("__hsi", "7516791444907507304"); // Static from curl, may need updates
-    form.append("__spin_r", this.cookies.__spin_r);
+    form.append("__req", "9"); // Updated based on curl
+    form.append("__hs", "20424.HYP:kadabra_pkg.2.1...0"); // Updated based on curl
+    form.append("dpr", 3);
+    form.append("__ccg", "EXCELLENT");
+    form.append("__rev", this.cookies.__spin_r || "1030485991");
+    form.append("__hsi", "7579273976648694901"); // This usually rotates, but keeping static often works for session
+    form.append("__spin_r", this.cookies.__spin_r || "1030485991");
     form.append("__spin_b", "trunk");
     form.append("__spin_t", Math.floor(Date.now() / 1000));
     form.append("lsd", this.cookies.lsd);
@@ -195,20 +221,21 @@ class MetaAI {
     form.append("fb_api_req_friendly_name", "useKadabraSendMessageMutation");
     form.append("variables", JSON.stringify(variables));
     form.append("server_timestamps", "true");
-    form.append("doc_id", "9232477736855473");
-
+    form.append("doc_id", DOC_ID); // Sử dụng DOC_ID mới
 
     const headers = {
         ...form.getHeaders(),
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
         "sec-fetch-site": "same-site",
+        "sec-fetch-mode": "cors",
         origin: "https://www.meta.ai",
         referer: "https://www.meta.ai/",
     };
+
     if (this.is_authed) {
         headers.cookie = `abra_sess=${this.cookies.abra_sess}`;
     } else {
-        headers.cookie = `datr=${this.cookies.datr}`
+        headers.cookie = `datr=${this.cookies.datr}`;
     }
 
     try {
@@ -221,7 +248,7 @@ class MetaAI {
             const raw_response = response.data;
             const last_streamed_response = this.extract_last_response(raw_response);
             if (!last_streamed_response) {
-            return await this.retry(message, stream, attempts);
+                return await this.retry(message, stream, attempts);
             }
             return await this.extract_data(last_streamed_response);
         } else {
@@ -234,98 +261,116 @@ class MetaAI {
   }
 
   async retry(message, stream = false, attempts = 0) {
-    if (attempts < MAX_RETRIES) {
-      console.warn(
-        `Was unable to obtain a valid response from Meta AI. Retrying... Attempt ${
-          attempts + 1
-        }/${MAX_RETRIES}.`
-      );
+    if (attempts < 3) {
+      console.warn(`Retrying... Attempt ${attempts + 1}/3.`);
       await new Promise((resolve) => setTimeout(resolve, 3000));
       return this._promptInternal(message, stream, false, attempts + 1);
     } else {
-      throw new Error(
-        "Unable to obtain a valid response from Meta AI. Try again later."
-      );
+      throw new Error("Unable to obtain a valid response from Meta AI.");
     }
   }
 
   extract_last_response(response) {
-    let last_overall_done_chunk = null;
+    let last_valid_chunk = null;
     const lines = response.split("\n");
     for (const line of lines) {
       if (line.startsWith('{')) {
         try {
-          const json_chunk = JSON.parse(line);
-          let bot_response;
-          if (json_chunk.data?.xfb_silverstone_send_message) {
-            const edge = json_chunk.data.xfb_silverstone_send_message.agent_stream.edges[0];
-            bot_response = edge?.node?.bot_response_message;
-          } else if (json_chunk.label?.endsWith("useKadabraSendMessageMutationStreamingLabel")) {
-            bot_response = json_chunk.data?.node?.bot_response_message;
+          const json = JSON.parse(line);
+          // Check if it has the data structure we want
+          if (json.data?.xfb_silverstone_send_message || json.data?.node?.bot_response_message) {
+             last_valid_chunk = json;
           }
-          
-          if (bot_response && bot_response.streaming_state === 'OVERALL_DONE') {
-            last_overall_done_chunk = json_chunk;
-          }
-        } catch (e) {
-          // ignore parsing errors
-        }
+        } catch (e) {}
       }
     }
-    return last_overall_done_chunk;
+    return last_valid_chunk;
   }
 
-    async* stream_response(lines) {
-        let buffer = "";
-        const stream = Readable.from(lines);
-        for await (const chunk of stream) {
-            buffer += chunk.toString();
-            let eolIndex;
-            while ((eolIndex = buffer.indexOf('\n')) >= 0) {
-                const line = buffer.substring(0, eolIndex).trim();
-                buffer = buffer.substring(eolIndex + 1);
-                if (line.startsWith("{")) {
-                    try {
-                        const json_line = JSON.parse(line);
-                         if (json_line.errors) {
-                            console.error("Error in stream:", json_line.errors);
-                            throw new Error("Stream returned an error.");
+  async* stream_response(lines) {
+    let buffer = "";
+    const inputStream = lines.data ? lines.data : lines; // Handle axios stream types
+    const stream = Readable.from(inputStream);
+
+    for await (const chunk of stream) {
+        buffer += chunk.toString();
+        let eolIndex;
+        while ((eolIndex = buffer.indexOf('\n')) >= 0) {
+            const line = buffer.substring(0, eolIndex).trim();
+            buffer = buffer.substring(eolIndex + 1);
+            if (line.startsWith("{")) {
+                try {
+                    const json_line = JSON.parse(line);
+                    // Bỏ qua lỗi errors trong stream để tránh sập server
+                    if (json_line.errors) {
+                        // console.warn("Meta Warning:", json_line.errors);
+                    }
+                    
+                    const extracted_data = await this.extract_data(json_line);
+                    if (extracted_data && extracted_data.message) {
+                        yield extracted_data;
+                    }
+                } catch (e) { }
+            }
+        }
+    }
+  }
+
+  async extract_data(json_line) {
+    let bot_response;
+    
+    // Case 1: Initial response
+    if (json_line.data?.xfb_silverstone_send_message) {
+        const edges = json_line.data.xfb_silverstone_send_message.agent_stream?.edges;
+        if (edges && edges.length > 0) {
+            bot_response = edges[0].node.bot_response_message;
+        }
+    } 
+    // Case 2: Streaming update
+    else if (json_line.data?.node?.bot_response_message) {
+        bot_response = json_line.data.node.bot_response_message;
+    }
+
+    if (!bot_response) {
+        return null;
+    }
+
+    // --- PARSING LOGIC MỚI CHO MULTI-STEP RESPONSE ---
+    let message = "";
+    const content = bot_response.content;
+
+    if (content) {
+        // Kiểm tra loại content mới: XFBAbraMessageMultiStepResponseContent
+        if (content.__typename === "XFBAbraMessageMultiStepResponseContent" || content.agent_steps) {
+            const steps = content.agent_steps || [];
+            // Lấy step cuối cùng hoặc step có text
+            for (const stepObj of steps) {
+                if (stepObj.composed_text && stepObj.composed_text.content) {
+                    for (const block of stepObj.composed_text.content) {
+                        if (block.text) {
+                            message += block.text;
                         }
-
-                        const extracted_data = await this.extract_data(json_line);
-
-                        if (extracted_data && extracted_data.message && extracted_data.message.trim()) {
-                            yield extracted_data;
-                        }
-
-                    } catch (e) {
-                        console.warn("Could not parse line in stream:", line, e.message);
                     }
                 }
             }
         }
+        // Fallback cho loại content cũ (ComposedText)
+        else if (content.composed_text && content.composed_text.content) {
+             for (const block of content.composed_text.content) {
+                if (block.text) message += block.text;
+            }
+        }
+        // Fallback: snippet
+        else if (bot_response.snippet) {
+            message = bot_response.snippet;
+        }
     }
 
-  async extract_data(json_line) {
-    let bot_response_message;
-    // The structure differs between the first response and subsequent stream chunks
-    if (json_line.data?.xfb_silverstone_send_message) { // Initial response
-        const edges = json_line.data.xfb_silverstone_send_message.agent_stream.edges;
-        bot_response_message = edges[edges.length -1]?.node?.bot_response_message;
-    } else if (json_line.label?.endsWith("useKadabraSendMessageMutationStreamingLabel")) { // Streaming update
-        bot_response_message = json_line.data?.node?.bot_response_message;
-    }
+    if (!message) return null;
 
-    if (!bot_response_message) {
-        return { message: "", sources: [], searchResults: null, media: [] };
-    }
-
-    // The 'snippet' field contains the full, pre-formatted response text.
-    const message = bot_response_message.snippet || "";
-
-    // The 'actions' array in the 'action_panel' contains search results.
+    // Xử lý search results (nếu có)
     let searchResults = null;
-    const action_panel = bot_response_message.action_panel;
+    const action_panel = bot_response.action_panel;
     if (action_panel && action_panel.actions) {
         const searchAction = action_panel.actions.find(
             (action) => action.__typename === "XFBAbraMessageSearchResults"
@@ -335,9 +380,10 @@ class MetaAI {
         }
     }
 
-    const fetch_id = bot_response_message.fetch_id;
+    // Xử lý sources
+    const fetch_id = bot_response.fetch_id;
     const sources = fetch_id ? await this.fetch_sources(fetch_id) : [];
-    const medias = this.extract_media(bot_response_message);
+    const medias = this.extract_media(bot_response);
     
     return { message, sources, searchResults, media: medias };
   }
@@ -360,27 +406,21 @@ class MetaAI {
   }
 
   async fetch_sources(fetch_id) {
+    // Logic fetch source giữ nguyên, có thể cần update doc_id nếu hỏng
     const url = "https://graph.meta.ai/graphql?locale=user";
-    const variables = {
-        abraMessageFetchID: fetch_id
-    };
-
+    const variables = { abraMessageFetchID: fetch_id };
     const form = new FormData();
-    if (this.is_authed) {
-        // Auth flow not updated
-    } else {
-        form.append("access_token", this.access_token);
-    }
+    if (!this.is_authed) form.append("access_token", this.access_token);
+    
     form.append("fb_api_caller_class", "RelayModern");
     form.append("fb_api_req_friendly_name", "AbraSearchPluginDialogQuery");
     form.append("variables", JSON.stringify(variables));
     form.append("server_timestamps", "true");
-    form.append("doc_id", "6946734308765963"); 
+    form.append("doc_id", "6946734308765963"); // Old doc_id might still work for this specific query
 
     const headers = {
         ...form.getHeaders(),
-        "x-fb-friendly-name": "AbraSearchPluginDialogQuery",
-        cookie: `dpr=2; abra_csrf=${this.cookies.abra_csrf}; datr=${this.cookies.datr}; ps_n=1; ps_l=1`,
+        cookie: `datr=${this.cookies.datr}`,
     };
 
     try {
@@ -389,10 +429,9 @@ class MetaAI {
         const searchResultsNode = response_json?.data?.message?.searchResults;
         return searchResultsNode ? searchResultsNode.references : [];
     } catch(e) {
-        console.error("Failed to fetch sources:", e.message);
         return [];
     }
   }
 }
 
-module.exports = { MetaAI }; 
+module.exports = { MetaAI };
