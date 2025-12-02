@@ -1,4 +1,3 @@
-// server.js
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
@@ -21,7 +20,31 @@ app.use((req, res, next) => {
     next();
 });
 
-app.get('/', (req, res) => res.send('Meta AI Server (Cursor Delta) Running.'));
+// --- FIX QUAN TRỌNG: NỐI LỊCH SỬ CHAT ---
+// Giúp bot nhớ ngữ cảnh (đóng vai, câu hỏi trước...)
+function convertMessagesToPrompt(messages) {
+    if (!messages || messages.length === 0) return "Hello";
+    
+    // Format dạng: 
+    // User: Hi
+    // Assistant: Hello!
+    // User: Who are you?
+    let prompt = "";
+    for (const msg of messages) {
+        const roleName = msg.role === 'user' ? 'User' : 'Assistant';
+        // Lọc bỏ tin nhắn system nếu cần, hoặc nối vào để bot biết nhiệm vụ
+        if (msg.role === 'system') {
+            prompt += `Instructions: ${msg.content}\n\n`;
+        } else {
+            prompt += `${roleName}: ${msg.content}\n`;
+        }
+    }
+    // Thêm gợi ý để bot trả lời tiếp
+    prompt += "Assistant:"; 
+    return prompt;
+}
+
+app.get('/', (req, res) => res.send('Meta AI Server (Fixed Encoding & Context) Running.'));
 app.get('/v1/models', (req, res) => res.json({ object: "list", data: [{ id: "meta-llama-3", object: "model" }] }));
 
 app.post('/v1/chat/completions', async (req, res) => {
@@ -30,11 +53,11 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     let meta = null;
     try {
-        // Multi-instance: Tạo mới cho mỗi request
         meta = await MetaAI.create(null, null, PROXY_URL);
-        const prompt = messages.slice().reverse().find(m => m.role === 'user')?.content || "Hello";
         
-        // Luôn tạo hội thoại mới để tránh lỗi signatures
+        // Sử dụng hàm convert mới để gửi full context
+        const prompt = convertMessagesToPrompt(messages);
+        
         const isNewConversation = true; 
 
         if (!stream) {
@@ -53,16 +76,14 @@ app.post('/v1/chat/completions', async (req, res) => {
 
             const streamResponse = await meta.prompt(prompt, true, isNewConversation);
             
-            // --- LOGIC CHỐNG LẶP CHỮ (CURSOR) ---
+            // Logic Cursor để chống lặp chữ
             let cursor = 0; 
 
             for await (const chunk of streamResponse) {
                 const fullText = chunk.message || "";
-                
-                // Chỉ gửi phần văn bản MỚI (chưa từng gửi)
                 if (fullText.length > cursor) {
                     const delta = fullText.slice(cursor);
-                    cursor = fullText.length; // Cập nhật vị trí con trỏ
+                    cursor = fullText.length;
 
                     res.write(`data: ${JSON.stringify({
                         id: `chatcmpl-${uuidv4()}`,
