@@ -1,5 +1,5 @@
 # Sử dụng Node.js image nhẹ (Alpine version)
-FROM node:18-alpine
+FROM node:22-alpine
 
 # Thiết lập thư mục làm việc
 WORKDIR /app
