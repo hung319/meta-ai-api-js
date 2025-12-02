@@ -1,11 +1,9 @@
-// src/main.js
 const { v4: uuidv4 } = require("uuid");
 const FormData = require("form-data");
 const { generateOfflineThreadingId, getSession, getCookies, getFbSession } = require("./utils");
 const { FacebookRegionBlocked } = require("./exceptions");
 const { Readable } = require("stream");
 
-// DOC_ID LẤY TỪ REQUEST CỦA BẠN
 const DOC_ID = "26191548920434983";
 
 class MetaAI {
@@ -35,7 +33,6 @@ class MetaAI {
 
   async getAccessToken() {
     if (this.access_token) return this.access_token;
-    // Logic lấy token giữ nguyên như cũ để accept TOS
     const url = "https://www.meta.ai/api/graphql/";
     const form = new FormData();
     form.append("lsd", this.cookies.lsd);
@@ -73,7 +70,6 @@ class MetaAI {
     }
 
     const offlineThreadingId = generateOfflineThreadingId();
-    // Variables cập nhật theo log cURL mới nhất của bạn
     const variables = {
         message: { sensitive_string_value: message },
         externalConversationId: this.external_conversation_id,
@@ -84,7 +80,6 @@ class MetaAI {
         qplJoinId: "fd7cc37ed3589c726", 
         imagineClientOptions: { orientation: "VERTICAL" },
         messagePersistentInput: {
-            // Fake bot ID bằng cách +1 vào user ID
             bot_message_offline_threading_id: (BigInt(offlineThreadingId) + 1n).toString(),
             external_conversation_id: this.external_conversation_id,
             is_new_conversation: new_conversation,
@@ -92,7 +87,6 @@ class MetaAI {
             offline_threading_id: offlineThreadingId,
             prompt_session_id: this.thread_session_id
         },
-        // Các cờ bắt buộc
         __relay_internal__pv__AbraSearchInlineReferencesEnabledrelayprovider: true,
         __relay_internal__pv__AbraComposedTextWidgetsrelayprovider: true,
         __relay_internal__pv__KadabraNewCitationsEnabledrelayprovider: true,
@@ -147,11 +141,16 @@ class MetaAI {
     return last;
   }
 
+  // --- FIX UTF-8 ENCODING Ở ĐÂY ---
   async* stream_response(streamData) {
     const stream = Readable.from(streamData);
+    const decoder = new TextDecoder('utf-8'); // Sử dụng Decoder
     let buffer = "";
+    
     for await (const chunk of stream) {
-        buffer += chunk.toString();
+        // decode với {stream: true} để xử lý emoji bị cắt đôi
+        buffer += decoder.decode(chunk, { stream: true });
+        
         let eolIndex;
         while ((eolIndex = buffer.indexOf('\n')) >= 0) {
             const line = buffer.substring(0, eolIndex).trim();
@@ -159,7 +158,6 @@ class MetaAI {
             if (line.startsWith("{")) {
                 try {
                     const json = JSON.parse(line);
-                    // BỎ QUA LỖI ERROR LOG ĐỂ KHÔNG BỊ RÁC CONSOLE
                     if (json.errors) { /* Silent Ignore */ }
                     const data = await this.extract_data(json);
                     if (data && data.message) yield data;
@@ -178,7 +176,6 @@ class MetaAI {
     let message = "";
     const content = bot_msg.content;
     
-    // Parse kiểu dữ liệu mới
     if (content?.__typename === "XFBAbraMessageMultiStepResponseContent" || content?.agent_steps) {
         const steps = content.agent_steps || [];
         for (const step of steps) {
@@ -193,8 +190,6 @@ class MetaAI {
     }
 
     if (!message) return null;
-
-    // Chỉ trả về message text, bỏ qua sources/media cho nhẹ
     return { message, sources: [], media: [] };
   }
 }
