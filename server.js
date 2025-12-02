@@ -20,31 +20,21 @@ app.use((req, res, next) => {
     next();
 });
 
-// --- FIX QUAN TRỌNG: NỐI LỊCH SỬ CHAT ---
-// Giúp bot nhớ ngữ cảnh (đóng vai, câu hỏi trước...)
+// Hàm nối context đã tối ưu
 function convertMessagesToPrompt(messages) {
     if (!messages || messages.length === 0) return "Hello";
-    
-    // Format dạng: 
-    // User: Hi
-    // Assistant: Hello!
-    // User: Who are you?
     let prompt = "";
     for (const msg of messages) {
         const roleName = msg.role === 'user' ? 'User' : 'Assistant';
-        // Lọc bỏ tin nhắn system nếu cần, hoặc nối vào để bot biết nhiệm vụ
-        if (msg.role === 'system') {
-            prompt += `Instructions: ${msg.content}\n\n`;
-        } else {
-            prompt += `${roleName}: ${msg.content}\n`;
-        }
+        // Xử lý xuống dòng để prompt rõ ràng hơn
+        if (msg.role === 'system') prompt += `System Instructions: ${msg.content}\n\n`;
+        else prompt += `${roleName}: ${msg.content}\n`;
     }
-    // Thêm gợi ý để bot trả lời tiếp
     prompt += "Assistant:"; 
     return prompt;
 }
 
-app.get('/', (req, res) => res.send('Meta AI Server (Fixed Encoding & Context) Running.'));
+app.get('/', (req, res) => res.send('Meta AI Server (Fix: Emoji + RateLimit).'));
 app.get('/v1/models', (req, res) => res.json({ object: "list", data: [{ id: "meta-llama-3", object: "model" }] }));
 
 app.post('/v1/chat/completions', async (req, res) => {
@@ -54,14 +44,10 @@ app.post('/v1/chat/completions', async (req, res) => {
     let meta = null;
     try {
         meta = await MetaAI.create(null, null, PROXY_URL);
-        
-        // Sử dụng hàm convert mới để gửi full context
         const prompt = convertMessagesToPrompt(messages);
         
-        const isNewConversation = true; 
-
         if (!stream) {
-            const response = await meta.prompt(prompt, false, isNewConversation);
+            const response = await meta.prompt(prompt, false, true);
             res.json({
                 id: `chatcmpl-${uuidv4()}`,
                 object: "chat.completion",
@@ -74,9 +60,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             res.setHeader('Cache-Control', 'no-cache');
             res.setHeader('Connection', 'keep-alive');
 
-            const streamResponse = await meta.prompt(prompt, true, isNewConversation);
-            
-            // Logic Cursor để chống lặp chữ
+            const streamResponse = await meta.prompt(prompt, true, true);
             let cursor = 0; 
 
             for await (const chunk of streamResponse) {
@@ -84,7 +68,6 @@ app.post('/v1/chat/completions', async (req, res) => {
                 if (fullText.length > cursor) {
                     const delta = fullText.slice(cursor);
                     cursor = fullText.length;
-
                     res.write(`data: ${JSON.stringify({
                         id: `chatcmpl-${uuidv4()}`,
                         object: "chat.completion.chunk",
