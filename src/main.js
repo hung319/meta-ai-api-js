@@ -1,8 +1,15 @@
+// src/main.js
 const { v4: uuidv4 } = require("uuid");
 const FormData = require("form-data");
-const { generateOfflineThreadingId, getSession, getCookies, getFbSession } = require("./utils");
+const { 
+    generateOfflineThreadingId, 
+    getSession, 
+    getCookies, 
+    getFbSession, 
+    getRandomUserAgent, 
+    delay 
+} = require("./utils");
 const { FacebookRegionBlocked } = require("./exceptions");
-const { Readable } = require("stream");
 
 const DOC_ID = "26191548920434983";
 
@@ -17,10 +24,14 @@ class MetaAI {
     this.access_token = null;
     this.external_conversation_id = null;
     this.thread_session_id = null;
+    this.userAgent = getRandomUserAgent(); // Mỗi session 1 UA cố định
   }
 
   async initialize() {
+    // Random delay nhẹ khi init để tránh spam
+    await delay(100, 500); 
     this.session = await getSession(this.proxy);
+    
     if (this.is_authed) {
         const fbSess = await getFbSession(this.fb_email, this.fb_password, this.proxy);
         this.cookies = { abra_sess: fbSess.abra_sess };
@@ -33,6 +44,9 @@ class MetaAI {
 
   async getAccessToken() {
     if (this.access_token) return this.access_token;
+    
+    await delay(500, 1500); // Bypass: Delay trước khi gọi API auth
+
     const url = "https://www.meta.ai/api/graphql/";
     const form = new FormData();
     form.append("lsd", this.cookies.lsd);
@@ -46,13 +60,13 @@ class MetaAI {
       cookie: `_js_datr=${this.cookies._js_datr}; abra_csrf=${this.cookies.abra_csrf}; datr=${this.cookies.datr};`,
       "sec-fetch-site": "same-origin",
       "x-fb-friendly-name": "useAbraAcceptTOSForTempUserMutation",
+      "User-Agent": this.userAgent, // Bypass: Dùng UA thật
     };
     try {
       const response = await this.session.post(url, form, { headers });
       this.access_token = response.data.data.xab_abra_accept_terms_of_service.new_temp_user_auth.access_token;
-      await new Promise(r => setTimeout(r, 1000));
       return this.access_token;
-    } catch (e) { throw new FacebookRegionBlocked("Region blocked"); }
+    } catch (e) { throw new FacebookRegionBlocked("Region blocked or Rate limit."); }
   }
 
   async prompt(message, stream = false, new_conversation = false) {
@@ -61,6 +75,10 @@ class MetaAI {
 
   async _promptInternal(message, stream = false, new_conversation = false, attempts = 0) {
     const url = "https://graph.meta.ai/graphql?locale=user";
+    
+    // Bypass: Random delay trước mỗi prompt (Human behavior simulation)
+    await delay(1000, 3000); 
+
     if (!this.is_authed && !this.access_token) this.access_token = await this.getAccessToken();
     else if (this.is_authed && !this.cookies.fb_dtsg) this.cookies = { ...this.cookies, ...(await getCookies(this.session)) };
 
@@ -106,12 +124,21 @@ class MetaAI {
 
     const headers = {
         ...form.getHeaders(),
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
+        "User-Agent": this.userAgent, // Bypass: Random User Agent
+        "Sec-Fetch-Site": "same-site",
+        "Sec-Fetch-Mode": "cors",
+        "Origin": "https://www.meta.ai",
+        "Referer": "https://www.meta.ai/",
         cookie: this.is_authed ? `abra_sess=${this.cookies.abra_sess}` : `datr=${this.cookies.datr}`
     };
 
     try {
-        const response = await this.session.post(url, form, { headers, responseType: stream ? "stream" : "text" });
+        const response = await this.session.post(url, form, { 
+            headers, 
+            responseType: stream ? "stream" : "text",
+            timeout: 30000 // Tăng timeout
+        });
+        
         if (!stream) {
             const last_chunk = this.extract_last_response(response.data);
             return last_chunk ? await this.extract_data(last_chunk) : await this.retry(message, stream, attempts);
@@ -119,17 +146,20 @@ class MetaAI {
             return this.stream_response(response.data);
         }
     } catch (error) {
-        console.error("Meta API Error:", error.message);
+        console.error(`Meta API Error (Attempt ${attempts + 1}):`, error.message);
         return await this.retry(message, stream, attempts);
     }
   }
 
   async retry(message, stream, attempts) {
-    if (attempts < 2) {
-      await new Promise(r => setTimeout(r, 2000));
+    if (attempts < 3) { // Tăng số lần retry
+      // Bypass: Exponential backoff (đợi lâu hơn sau mỗi lần lỗi)
+      const waitTime = (attempts + 1) * 2000 + Math.random() * 1000;
+      console.log(`Waiting ${Math.floor(waitTime)}ms before retry...`);
+      await new Promise(r => setTimeout(r, waitTime));
       return this._promptInternal(message, stream, false, attempts + 1);
     }
-    throw new Error("Meta AI Timeout.");
+    throw new Error("Meta AI Rate Limit or Server Error.");
   }
 
   extract_last_response(raw) {
@@ -141,20 +171,26 @@ class MetaAI {
     return last;
   }
 
-  // --- FIX UTF-8 ENCODING Ở ĐÂY ---
+  // --- FIX LỖI ICON ? BẰNG CÁCH DÙNG BUFFER ---
   async* stream_response(streamData) {
-    const stream = Readable.from(streamData);
-    const decoder = new TextDecoder('utf-8'); // Sử dụng Decoder
-    let buffer = "";
+    // Dùng Buffer.alloc để chứa dữ liệu nhị phân
+    let buffer = Buffer.alloc(0);
     
-    for await (const chunk of stream) {
-        // decode với {stream: true} để xử lý emoji bị cắt đôi
-        buffer += decoder.decode(chunk, { stream: true });
+    for await (const chunk of streamData) {
+        // Nối chunk (nhị phân) vào buffer tổng
+        buffer = Buffer.concat([buffer, chunk]);
         
         let eolIndex;
-        while ((eolIndex = buffer.indexOf('\n')) >= 0) {
-            const line = buffer.substring(0, eolIndex).trim();
-            buffer = buffer.substring(eolIndex + 1);
+        // Tìm ký tự xuống dòng (\n = byte 10) trong Buffer
+        while ((eolIndex = buffer.indexOf(10)) >= 0) {
+            // Cắt ra 1 dòng hoàn chỉnh
+            const lineBuffer = buffer.subarray(0, eolIndex);
+            // Phần còn lại giữ lại cho vòng lặp sau
+            buffer = buffer.subarray(eolIndex + 1);
+            
+            // Convert Buffer thành String (Lúc này dòng đã trọn vẹn, không bị cắt icon)
+            const line = lineBuffer.toString('utf-8').trim();
+            
             if (line.startsWith("{")) {
                 try {
                     const json = JSON.parse(line);
