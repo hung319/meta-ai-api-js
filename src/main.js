@@ -5,47 +5,38 @@ const {
     generateOfflineThreadingId, 
     getSession, 
     getCookies, 
-    getFbSession, 
     getRandomUserAgent, 
     delay 
 } = require("./utils");
 const { FacebookRegionBlocked } = require("./exceptions");
+const { Readable } = require("stream");
 
 const DOC_ID = "26191548920434983";
 
 class MetaAI {
   constructor(fb_email = null, fb_password = null, proxy = null) {
-    this.fb_email = fb_email;
-    this.fb_password = fb_password;
     this.proxy = proxy;
-    this.is_authed = fb_password !== null && fb_email !== null;
+    this.is_authed = false; // Force Anonymous để tránh lỗi 400 do auth hỏng
     this.session = null;
     this.cookies = null;
     this.access_token = null;
     this.external_conversation_id = null;
     this.thread_session_id = null;
-    this.userAgent = getRandomUserAgent(); // Mỗi session 1 UA cố định
+    // TẠO USER AGENT 1 LẦN DUY NHẤT CHO CẢ PHIÊN
+    this.userAgent = getRandomUserAgent(); 
   }
 
   async initialize() {
-    // Random delay nhẹ khi init để tránh spam
-    await delay(100, 500); 
     this.session = await getSession(this.proxy);
-    
-    if (this.is_authed) {
-        const fbSess = await getFbSession(this.fb_email, this.fb_password, this.proxy);
-        this.cookies = { abra_sess: fbSess.abra_sess };
-        const otherCookies = await getCookies(this.session);
-        this.cookies = { ...this.cookies, ...otherCookies };
-    } else {
-        this.cookies = await getCookies(this.session);
-    }
+    // Truyền UserAgent vào để lấy Cookie khớp với UA
+    this.cookies = await getCookies(this.session, this.userAgent);
   }
 
   async getAccessToken() {
     if (this.access_token) return this.access_token;
     
-    await delay(500, 1500); // Bypass: Delay trước khi gọi API auth
+    // Delay nhẹ để giống người thật
+    await delay(200, 500);
 
     const url = "https://www.meta.ai/api/graphql/";
     const form = new FormData();
@@ -60,13 +51,17 @@ class MetaAI {
       cookie: `_js_datr=${this.cookies._js_datr}; abra_csrf=${this.cookies.abra_csrf}; datr=${this.cookies.datr};`,
       "sec-fetch-site": "same-origin",
       "x-fb-friendly-name": "useAbraAcceptTOSForTempUserMutation",
-      "User-Agent": this.userAgent, // Bypass: Dùng UA thật
+      "User-Agent": this.userAgent, // QUAN TRỌNG: Dùng đúng UA
     };
+
     try {
       const response = await this.session.post(url, form, { headers });
       this.access_token = response.data.data.xab_abra_accept_terms_of_service.new_temp_user_auth.access_token;
       return this.access_token;
-    } catch (e) { throw new FacebookRegionBlocked("Region blocked or Rate limit."); }
+    } catch (e) { 
+        console.error("AccessToken Error:", e.response?.data || e.message);
+        throw new FacebookRegionBlocked("Failed to get Access Token (Status 400 likely due to Cookie mismatch)"); 
+    }
   }
 
   async prompt(message, stream = false, new_conversation = false) {
@@ -76,11 +71,7 @@ class MetaAI {
   async _promptInternal(message, stream = false, new_conversation = false, attempts = 0) {
     const url = "https://graph.meta.ai/graphql?locale=user";
     
-    // Bypass: Random delay trước mỗi prompt (Human behavior simulation)
-    await delay(1000, 3000); 
-
-    if (!this.is_authed && !this.access_token) this.access_token = await this.getAccessToken();
-    else if (this.is_authed && !this.cookies.fb_dtsg) this.cookies = { ...this.cookies, ...(await getCookies(this.session)) };
+    if (!this.access_token) await this.getAccessToken();
 
     if (!this.external_conversation_id || new_conversation) {
       this.external_conversation_id = uuidv4();
@@ -88,6 +79,7 @@ class MetaAI {
     }
 
     const offlineThreadingId = generateOfflineThreadingId();
+    
     const variables = {
         message: { sensitive_string_value: message },
         externalConversationId: this.external_conversation_id,
@@ -113,9 +105,7 @@ class MetaAI {
     };
 
     const form = new FormData();
-    if(this.is_authed) form.append("fb_dtsg", this.cookies.fb_dtsg);
-    else form.append("access_token", this.access_token);
-
+    form.append("access_token", this.access_token);
     form.append("fb_api_caller_class", "RelayModern");
     form.append("fb_api_req_friendly_name", "useKadabraSendMessageMutation");
     form.append("variables", JSON.stringify(variables));
@@ -124,19 +114,18 @@ class MetaAI {
 
     const headers = {
         ...form.getHeaders(),
-        "User-Agent": this.userAgent, // Bypass: Random User Agent
+        "User-Agent": this.userAgent, // QUAN TRỌNG: Đồng bộ UA
         "Sec-Fetch-Site": "same-site",
         "Sec-Fetch-Mode": "cors",
         "Origin": "https://www.meta.ai",
         "Referer": "https://www.meta.ai/",
-        cookie: this.is_authed ? `abra_sess=${this.cookies.abra_sess}` : `datr=${this.cookies.datr}`
+        cookie: `datr=${this.cookies.datr}` // Chỉ cần datr cho authenticated calls
     };
 
     try {
         const response = await this.session.post(url, form, { 
             headers, 
-            responseType: stream ? "stream" : "text",
-            timeout: 30000 // Tăng timeout
+            responseType: stream ? "stream" : "text" 
         });
         
         if (!stream) {
@@ -146,20 +135,18 @@ class MetaAI {
             return this.stream_response(response.data);
         }
     } catch (error) {
-        console.error(`Meta API Error (Attempt ${attempts + 1}):`, error.message);
+        // Nếu lỗi 400, thường do Cookie/Token hết hạn hoặc sai lệch.
+        console.error(`Meta API Error (${attempts}):`, error.response?.status, error.message);
         return await this.retry(message, stream, attempts);
     }
   }
 
   async retry(message, stream, attempts) {
-    if (attempts < 3) { // Tăng số lần retry
-      // Bypass: Exponential backoff (đợi lâu hơn sau mỗi lần lỗi)
-      const waitTime = (attempts + 1) * 2000 + Math.random() * 1000;
-      console.log(`Waiting ${Math.floor(waitTime)}ms before retry...`);
-      await new Promise(r => setTimeout(r, waitTime));
+    if (attempts < 2) { 
+      await delay(1000, 2000);
       return this._promptInternal(message, stream, false, attempts + 1);
     }
-    throw new Error("Meta AI Rate Limit or Server Error.");
+    throw new Error("Meta AI Request Failed.");
   }
 
   extract_last_response(raw) {
@@ -171,30 +158,24 @@ class MetaAI {
     return last;
   }
 
-  // --- FIX LỖI ICON ? BẰNG CÁCH DÙNG BUFFER ---
+  // --- LOGIC BUFFER CHO EMOJI KHÔNG LỖI ---
   async* stream_response(streamData) {
-    // Dùng Buffer.alloc để chứa dữ liệu nhị phân
     let buffer = Buffer.alloc(0);
     
     for await (const chunk of streamData) {
-        // Nối chunk (nhị phân) vào buffer tổng
         buffer = Buffer.concat([buffer, chunk]);
         
         let eolIndex;
-        // Tìm ký tự xuống dòng (\n = byte 10) trong Buffer
-        while ((eolIndex = buffer.indexOf(10)) >= 0) {
-            // Cắt ra 1 dòng hoàn chỉnh
+        while ((eolIndex = buffer.indexOf(10)) >= 0) { // 10 is newline \n
             const lineBuffer = buffer.subarray(0, eolIndex);
-            // Phần còn lại giữ lại cho vòng lặp sau
             buffer = buffer.subarray(eolIndex + 1);
             
-            // Convert Buffer thành String (Lúc này dòng đã trọn vẹn, không bị cắt icon)
             const line = lineBuffer.toString('utf-8').trim();
             
             if (line.startsWith("{")) {
                 try {
                     const json = JSON.parse(line);
-                    if (json.errors) { /* Silent Ignore */ }
+                    if (json.errors) { /* Ignore */ }
                     const data = await this.extract_data(json);
                     if (data && data.message) yield data;
                 } catch (e) {}
