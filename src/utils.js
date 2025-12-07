@@ -2,31 +2,8 @@ const { CookieJar } = require("tough-cookie");
 const { wrapper } = require("axios-cookiejar-support");
 const axios = require("axios");
 const cheerio = require("cheerio");
+const { HttpsProxyAgent } = require("https-proxy-agent"); // Import thư viện mới
 const { FacebookInvalidCredentialsException } = require("./exceptions");
-
-// --- HELPER: CHUYỂN ĐỔI PROXY STRING SANG AXIOS OBJECT ---
-function parseProxy(proxyStr) {
-  if (!proxyStr) return null;
-  try {
-    const url = new URL(proxyStr);
-    const proxyConfig = {
-      protocol: url.protocol.replace(':', ''),
-      host: url.hostname,
-      port: parseInt(url.port),
-    };
-
-    if (url.username || url.password) {
-      proxyConfig.auth = {
-        username: url.username,
-        password: url.password
-      };
-    }
-    return proxyConfig;
-  } catch (error) {
-    console.error("Lỗi parse proxy URL:", error.message);
-    return null;
-  }
-}
 
 function generateOfflineThreadingId() {
   const max_int = BigInt("0xFFFFFFFFFFFFFFFF");
@@ -63,15 +40,20 @@ function extractValue(text, startStr, endStr) {
   return text.substring(start + startStr.length, end);
 }
 
+// --- HÀM LOGIN FACEBOOK ---
 async function getFbSession(email, password, proxies = null) {
   const jar = new CookieJar();
+  // Tạo session axios có hỗ trợ cookie jar
   const session = wrapper(axios.create({ jar, withCredentials: true }));
 
-  // --- FIX: Sử dụng proxy đã parse ---
+  // --- FIX: Sử dụng HttpsProxyAgent ---
   if (proxies) {
-    const proxyConfig = parseProxy(proxies);
-    if (proxyConfig) {
-        session.defaults.proxy = proxyConfig;
+    try {
+        const agent = new HttpsProxyAgent(proxies);
+        session.defaults.httpsAgent = agent;
+        session.defaults.proxy = false; // Tắt proxy mặc định của axios để tránh xung đột
+    } catch (e) {
+        console.error("Lỗi khởi tạo Proxy Agent cho FB Session:", e.message);
     }
   }
 
@@ -133,10 +115,11 @@ async function getFbSession(email, password, proxies = null) {
 
   if (!sbCookie || !xsCookie) {
     throw new FacebookInvalidCredentialsException(
-      "Was not able to login to Facebook. Please check your credentials. You may also have been rate limited. Try to connect to Facebook manually."
+      "Không thể đăng nhập Facebook. Kiểm tra lại tài khoản hoặc IP bị chặn."
     );
   }
 
+  // Truyền session hiện tại vào getCookies để tận dụng Proxy Agent đã cài
   const metaAiCookies = await getCookies(session);
 
   let stateUrl = "https://www.meta.ai/state/";
@@ -170,14 +153,15 @@ async function getFbSession(email, password, proxies = null) {
   const abraSessCookie = finalCookies.find((c) => c.key === "abra_sess");
   if (!abraSessCookie) {
     throw new FacebookInvalidCredentialsException(
-      "Was not able to login to Facebook. Please check your credentials. You may also have been rate limited. Try to connect to Facebook manually."
+      "Không thể lấy abra_sess cookie."
     );
   }
-  console.info("Successfully logged in to Facebook.");
+  console.info("Đăng nhập Facebook thành công.");
   return { abra_sess: abraSessCookie.value };
 }
 
 async function getCookies(sessionInstance) {
+    // Nếu sessionInstance được truyền vào, nó đã có Proxy Agent (nếu có)
     const session = sessionInstance || axios.create();
     const response = await session.get("https://www.meta.ai/");
     const responseText = response.data;
@@ -190,7 +174,6 @@ async function getCookies(sessionInstance) {
     const spinRMatch = responseText.match(/"__spin_r" *: *(\d+)/);
     const spinR = spinRMatch ? spinRMatch[1] : null;
 
-
     return {
         _js_datr: extractValue(responseText, '_js_datr":{"value":"', '",'),
         abra_csrf: extractValue(responseText, 'abra_csrf":{"value":"', '",'),
@@ -201,36 +184,45 @@ async function getCookies(sessionInstance) {
     };
 }
 
-
+// --- HÀM KHỞI TẠO SESSION CHÍNH ---
 async function getSession(proxy = null, testUrl = "https://api.ipify.org/?format=json") {
   const session = axios.create();
+  
   if (!proxy) {
     return session;
   }
-  
-  // --- FIX: Parse proxy string thành object ---
-  const proxyConfig = parseProxy(proxy);
-  if (!proxyConfig) {
-      console.warn("Proxy URL không hợp lệ, tiếp tục mà không dùng proxy.");
-      return session;
-  }
 
   try {
-    // Test proxy với config đã parse
-    const response = await session.get(testUrl, { proxy: proxyConfig, timeout: 10000 });
+    // Tạo Agent từ chuỗi proxy (tự động xử lý user:pass@host:port)
+    const agent = new HttpsProxyAgent(proxy);
+
+    // Test kết nối:
+    // QUAN TRỌNG: Phải set proxy: false để axios không can thiệp,
+    // và set httpsAgent để HttpsProxyAgent xử lý
+    const response = await session.get(testUrl, { 
+        httpsAgent: agent, 
+        proxy: false,
+        timeout: 10000 
+    });
+
     if (response.status === 200) {
-      console.log("Proxy kết nối thành công:", response.data.ip);
-      session.defaults.proxy = proxyConfig;
+      console.log("✅ Proxy hoạt động tốt. IP:", response.data.ip);
+      
+      // Áp dụng Agent cho toàn bộ các request sau này của session
+      session.defaults.httpsAgent = agent;
+      session.defaults.proxy = false; 
+      
       return session;
     }
   } catch (error) {
-      // In lỗi chi tiết hơn để debug
-      console.error(`Proxy Error (${testUrl}):`, error.message);
-      throw new Error("Proxy is not working.");
+      console.error(`❌ Proxy Error (${testUrl}):`, error.message);
+      if (error.response) {
+          console.error("Status:", error.response.status);
+      }
+      throw new Error("Proxy không hoạt động.");
   }
-  throw new Error("Proxy is not working.");
+  throw new Error("Proxy không hoạt động.");
 }
-
 
 module.exports = {
   generateOfflineThreadingId,
