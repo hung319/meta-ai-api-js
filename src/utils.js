@@ -4,6 +4,30 @@ const axios = require("axios");
 const cheerio = require("cheerio");
 const { FacebookInvalidCredentialsException } = require("./exceptions");
 
+// --- HELPER: CHUYỂN ĐỔI PROXY STRING SANG AXIOS OBJECT ---
+function parseProxy(proxyStr) {
+  if (!proxyStr) return null;
+  try {
+    const url = new URL(proxyStr);
+    const proxyConfig = {
+      protocol: url.protocol.replace(':', ''),
+      host: url.hostname,
+      port: parseInt(url.port),
+    };
+
+    if (url.username || url.password) {
+      proxyConfig.auth = {
+        username: url.username,
+        password: url.password
+      };
+    }
+    return proxyConfig;
+  } catch (error) {
+    console.error("Lỗi parse proxy URL:", error.message);
+    return null;
+  }
+}
+
 function generateOfflineThreadingId() {
   const max_int = BigInt("0xFFFFFFFFFFFFFFFF");
   const mask22_bits = BigInt((1 << 22) - 1);
@@ -43,8 +67,12 @@ async function getFbSession(email, password, proxies = null) {
   const jar = new CookieJar();
   const session = wrapper(axios.create({ jar, withCredentials: true }));
 
+  // --- FIX: Sử dụng proxy đã parse ---
   if (proxies) {
-    session.defaults.proxy = proxies;
+    const proxyConfig = parseProxy(proxies);
+    if (proxyConfig) {
+        session.defaults.proxy = proxyConfig;
+    }
   }
 
   const loginUrl = "https://www.facebook.com/login/?next";
@@ -81,7 +109,6 @@ async function getFbSession(email, password, proxies = null) {
     login: "1",
     next: "",
   };
-
   const postHeaders = {
     "User-Agent":
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:132.0) Gecko/20100101 Firefox/132.0",
@@ -95,13 +122,11 @@ async function getFbSession(email, password, proxies = null) {
     "Sec-Fetch-Site": "same-origin",
     "Sec-Fetch-User": "?1",
   };
-
   await session.post(postUrl, new URLSearchParams(data).toString(), {
     headers: postHeaders,
     maxRedirects: 0,
     validateStatus: (status) => status >= 200 && status < 400,
   });
-
   const cookies = await jar.getCookies(postUrl);
   const sbCookie = cookies.find((c) => c.key === "sb");
   const xsCookie = cookies.find((c) => c.key === "xs");
@@ -123,19 +148,16 @@ async function getFbSession(email, password, proxies = null) {
     "user-agent":
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
   };
-
   const stateResponse = await session.post(stateUrl, payload, {
     headers: stateHeaders,
   });
   const state = extractValue(stateResponse.data, '"state":"', '"');
-
   const oidcUrl = `https://www.facebook.com/oidc/?app_id=1358015658191005&scope=openid%20linking&response_type=code&redirect_uri=https%3A%2F%2Fwww.meta.ai%2Fauth%2F&no_universal_links=1&deoia=1&state=${state}`;
 
   const oidcResponse = await session.get(oidcUrl, {
     maxRedirects: 0,
     validateStatus: null,
   });
-
   const nextUrl = oidcResponse.headers.location;
 
   if (!nextUrl) {
@@ -146,7 +168,6 @@ async function getFbSession(email, password, proxies = null) {
 
   const finalCookies = await jar.getCookies("https://www.meta.ai/");
   const abraSessCookie = finalCookies.find((c) => c.key === "abra_sess");
-
   if (!abraSessCookie) {
     throw new FacebookInvalidCredentialsException(
       "Was not able to login to Facebook. Please check your credentials. You may also have been rate limited. Try to connect to Facebook manually."
@@ -163,7 +184,6 @@ async function getCookies(sessionInstance) {
 
     const jazoestMatch = responseText.match(/"jazoest" *: *(\d+)/);
     const jazoest = jazoestMatch ? jazoestMatch[1] : null;
-    
     const lsdMatch = responseText.match(/"LSD",\[\],{"token":"([^"]+)"}/);
     const lsd = lsdMatch ? lsdMatch[1] : null;
 
@@ -187,13 +207,25 @@ async function getSession(proxy = null, testUrl = "https://api.ipify.org/?format
   if (!proxy) {
     return session;
   }
+  
+  // --- FIX: Parse proxy string thành object ---
+  const proxyConfig = parseProxy(proxy);
+  if (!proxyConfig) {
+      console.warn("Proxy URL không hợp lệ, tiếp tục mà không dùng proxy.");
+      return session;
+  }
+
   try {
-    const response = await session.get(testUrl, { proxy, timeout: 10000 });
+    // Test proxy với config đã parse
+    const response = await session.get(testUrl, { proxy: proxyConfig, timeout: 10000 });
     if (response.status === 200) {
-      session.defaults.proxy = proxy;
+      console.log("Proxy kết nối thành công:", response.data.ip);
+      session.defaults.proxy = proxyConfig;
       return session;
     }
   } catch (error) {
+      // In lỗi chi tiết hơn để debug
+      console.error(`Proxy Error (${testUrl}):`, error.message);
       throw new Error("Proxy is not working.");
   }
   throw new Error("Proxy is not working.");
@@ -206,4 +238,4 @@ module.exports = {
   getFbSession,
   getCookies,
   getSession,
-}; 
+};
